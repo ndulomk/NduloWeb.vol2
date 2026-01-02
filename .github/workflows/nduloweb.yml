@@ -1,0 +1,138 @@
+name: nduloWeb CI/CD
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**"
+      - ".github/workflows/nduloweb.yml"
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Test & Lint Rust
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release
+        run: cargo build --release
+
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p ${{ secrets.SSH_PORT || '22' }} ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy nduloWeb on VPS
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -p ${{ secrets.SSH_PORT || '22' }} \
+              ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash << 'ENDSSH'
+            set -e
+
+            REPO_PATH="/home/edgar/work/nduloweb"
+            LOGS_PATH="$REPO_PATH/logs"
+            PM2_APP_NAME="nduloweb"
+
+            if [ ! -d "$REPO_PATH" ]; then
+              echo "Repository not found, cloning..."
+              cd /home/edgar/work
+              git clone https://github.com/ndulomk/nduloWeb.Vol2-made-by-ndulo.git nduloweb
+            fi
+
+            cd "$REPO_PATH"
+
+            echo "Fetching latest changes..."
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "Building nduloweb in release mode..."
+            export PATH=$HOME/.cargo/bin:$PATH
+            cargo build --release
+
+            echo "Build completed!"
+
+            echo "Restarting application with PM2..."
+            pm2 delete $PM2_APP_NAME --silent || true
+
+            mkdir -p "$LOGS_PATH"
+
+            pm2 start "$REPO_PATH/target/release/portfolio-seo-server" \
+              --name $PM2_APP_NAME \
+              --time \
+              --log-date-format "YYYY-MM-DD HH:mm:ss Z" \
+              -o "$LOGS_PATH/nduloweb-out.log" \
+              -e "$LOGS_PATH/nduloweb-error.log" \
+              --silent
+
+            pm2 save --silent
+
+            echo "nduloweb deployed successfully!"
+          ENDSSH
+
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -p ${{ secrets.SSH_PORT || '22' }} \
+              ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash << 'ENDSSH'
+            set -e
+
+            echo "Waiting for application to start..."
+            sleep 10
+
+            HEALTH_URL="http://localhost:3010"
+            echo "Health check at $HEALTH_URL..."
+
+            for i in {1..5}; do
+              if curl -f -s "$HEALTH_URL" > /dev/null; then
+                echo "Health check passed!"
+                curl -s "$HEALTH_URL"
+                exit 0
+              fi
+              echo "Attempt $i/5 failed, waiting..."
+              sleep 5
+            done
+
+            echo "Health check failed after 5 attempts"
+            exit 1
+          ENDSSH
+
+      - name: Notify deployment
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "nduloweb deployed successfully to https://ndulo.store"
+          else
+            echo "nduloweb deployment failed!"
+          fi
