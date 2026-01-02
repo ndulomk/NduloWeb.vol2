@@ -10,39 +10,9 @@ on:
     branches: ["main"]
 
 jobs:
-  test:
-    name: Test & Lint Rust
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build release
-        run: cargo build --release
-
   deploy:
     name: Deploy to VPS
     runs-on: ubuntu-latest
-    needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
@@ -83,7 +53,6 @@ jobs:
 
             echo "Build completed!"
 
-            # Restart com PM2
             echo "Restarting application with PM2..."
             pm2 delete $PM2_APP_NAME --silent || true
 
